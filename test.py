@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import Literal, Optional
 
 import numpy as np
+import pynvml
+import ray
 import torch
 import torch.distributed as dist
 import torch.nn as nn
@@ -16,11 +18,12 @@ from tqdm import tqdm
 from typing_extensions import Annotated
 
 from model import TestTransformer
+from raydl import Dataloader as RayLoader
+from raydl import get_items_from_queue
 from torchdl import RandomSequenceDataset, collate_fn
 from utils import clean_ray_init, compute_pad_rate
 
 app = typer.Typer()
-import pynvml
 
 
 def get_gpu_stats(handle):
@@ -63,7 +66,7 @@ def main(
     gpu_handle = pynvml.nvmlDeviceGetHandleByIndex(0)
 
     results_file.touch()
-    clean_ray_init(force=num_workers * 2, dashboard=False)
+    clean_ray_init(force=num_workers * 2, dashboard=False, namespace="testing")
     device = "cuda"
 
     model = TestTransformer(max_seq_len=1024, vocab_size=1024, d_model=64).to(
@@ -100,6 +103,44 @@ def main(
         pad_rate = compute_pad_rate(padded)
         total_pad_rate.append(pad_rate)
 
+        logits = model(padded)  # shape [B, out_dim]
+        targets = torch.randn(logits.shape, device=device)
+        loss = criterion(logits, targets)
+        optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        optimizer.step()
+        all_gpu_stats.append(get_gpu_stats(gpu_handle))
+    end_time = time.perf_counter()
+
+    total_pad_rate = np.average(np.array(total_pad_rate))
+    total_time = end_time - start_time
+    print(f"Total pad rate: {total_pad_rate} total_time: {total_time}")
+    print(np.average(np.array(all_gpu_stats), axis=0))
+
+    # RayLoader
+    ray_loader = RayLoader.options(
+        name="data_loader", lifetime="detached"
+    ).remote(
+        num_sequnces=num_sequences,  # TODO Change this based on world size
+        num_generator_workers=num_workers,
+        num_collate_workers=2,
+        batch_size=batch_size,
+        prefetch_factor=prefect_factor,
+        world_size=1,  # this should really be called num_gpus in this case
+    )
+    queue = ray.get(ray_loader.get_batch_queue.remote(0))
+    worker_refs = ray.get(ray_loader.start_round.remote())
+
+    total_pad_rate = []
+    all_gpu_stats = []
+    start_time = time.perf_counter()
+    for batch in tqdm(
+        get_items_from_queue(worker_refs, queue), total=total_num_sequences
+    ):
+        batch_cpu = torch.tensor(batch, dtype=torch.long)
+        padded = batch_cpu.to(device, non_blocking=True)
+        pad_rate = compute_pad_rate(padded)
+        total_pad_rate.append(pad_rate)
         logits = model(padded)  # shape [B, out_dim]
         targets = torch.randn(logits.shape, device=device)
         loss = criterion(logits, targets)
