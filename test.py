@@ -20,6 +20,15 @@ from torchdl import RandomSequenceDataset, collate_fn
 from utils import clean_ray_init, compute_pad_rate
 
 app = typer.Typer()
+import pynvml
+
+
+def get_gpu_stats(handle):
+    """Return (util%, mem_used_MB, mem_total_MB)."""
+    util = pynvml.nvmlDeviceGetUtilizationRates(handle)
+    meminfo = pynvml.nvmlDeviceGetMemoryInfo(handle)
+    power = pynvml.nvmlDeviceGetPowerUsage(handle) / 1000.0
+    return util.gpu, meminfo.used / 1e6, meminfo.total / 1e6, power
 
 
 @app.command()
@@ -50,6 +59,9 @@ def main(
     else:
         print("Running in single-process mode (no distributed init).")
 
+    pynvml.nvmlInit()
+    gpu_handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+
     results_file.touch()
     clean_ray_init(force=num_workers * 2, dashboard=False)
     device = "cuda"
@@ -79,6 +91,7 @@ def main(
     total_num_sequences = math.ceil(num_sequences / (batch_size * world_size))
 
     total_pad_rate = []
+    all_gpu_stats = []
     start_time = time.perf_counter()
     for i, (padded_cpu, lengths) in tqdm(
         enumerate(dl), total=total_num_sequences
@@ -88,20 +101,24 @@ def main(
         total_pad_rate.append(pad_rate)
 
         logits = model(padded)  # shape [B, out_dim]
-        targets = torch.randn((batch_size, 64), device=device)
+        targets = torch.randn(logits.shape, device=device)
         loss = criterion(logits, targets)
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()
+        all_gpu_stats.append(get_gpu_stats(gpu_handle))
     end_time = time.perf_counter()
 
     total_pad_rate = np.average(np.array(total_pad_rate))
     total_time = end_time - start_time
     print(f"Total pad rate: {total_pad_rate} total_time: {total_time}")
+    print(np.average(np.array(all_gpu_stats), axis=0))
 
     if world_size > 1 and dist.is_initialized():
         dist.barrier()
         dist.destroy_process_group()
+
+    pynvml.nvmlShutdown()
 
 
 if __name__ == "__main__":

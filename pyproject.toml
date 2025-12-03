@@ -16,7 +16,8 @@ dependencies = [
     "sortedcontainers>=2.4.0",
     "torch>=2.7.1",
     "tqdm>=4.67.1",
-    "typer"
+    "typer",
+    "pynvml"
 ]
 
 [[tool.uv.index]]
