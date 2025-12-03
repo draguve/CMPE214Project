@@ -310,6 +310,40 @@ class Dataloader:
         self.collate_worker_references = None
         print("Queue Force Stopped")
 
+    def teardown(self):
+        # 2) Kill worker actors
+        for a in self.generator_actors or []:
+            try:
+                ray.kill(a, no_restart=True)
+            except Exception:
+                pass
+        for a in self.collate_actors or []:
+            try:
+                ray.kill(a, no_restart=True)
+            except Exception:
+                pass
+
+        # 3) Kill queue actor backends explicitly (they are Ray actors under the hood)
+        try:
+            if self.prebatch_queue and self.prebatch_queue.actor:
+                ray.kill(self.prebatch_queue.actor, no_restart=True)
+        except Exception:
+            pass
+        for q in self.output_queues or []:
+            try:
+                if q.actor:
+                    ray.kill(q.actor, no_restart=True)
+            except Exception:
+                pass
+
+        # 4) Clear references so this handle is inert
+        self.generator_worker_references = None
+        self.collate_worker_references = None
+        self.generator_actors = []
+        self.collate_actors = []
+        self.output_queues = None
+        self.prebatch_queue = None
+
 
 def get_items_from_queue(
     collate_worker_references,

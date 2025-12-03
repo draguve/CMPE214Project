@@ -41,7 +41,6 @@ def main(
     ),
     backend: Literal["gloo", "nccl", "mpi"] = "nccl",
     num_workers: int = 4,
-    prefect_factor: int = 16,
     num_sequences: int = 1024,
     batch_size: int = 8,
     vocab_size: int = 1024,
@@ -97,7 +96,7 @@ def main(
     all_gpu_stats = []
     start_time = time.perf_counter()
     for i, (padded_cpu, lengths) in tqdm(
-        enumerate(dl), total=total_num_sequences
+        enumerate(dl), total=total_num_sequences, desc="TorchLoader"
     ):
         padded = padded_cpu.to(device, non_blocking=True)
         pad_rate = compute_pad_rate(padded)
@@ -117,43 +116,48 @@ def main(
     print(f"Total pad rate: {total_pad_rate} total_time: {total_time}")
     print(np.average(np.array(all_gpu_stats), axis=0))
 
-    # RayLoader
-    ray_loader = RayLoader.options(
-        name="data_loader", lifetime="detached"
-    ).remote(
-        num_sequnces=num_sequences,  # TODO Change this based on world size
-        num_generator_workers=num_workers,
-        num_collate_workers=2,
-        batch_size=batch_size,
-        prefetch_factor=prefect_factor,
-        world_size=1,  # this should really be called num_gpus in this case
-    )
-    queue = ray.get(ray_loader.get_batch_queue.remote(0))
-    worker_refs = ray.get(ray_loader.start_round.remote())
+    for prefetch_factor in [2, 4, 8, 16]:
+        # RayLoader
+        ray_loader = RayLoader.options(
+            name="data_loader", lifetime="detached"
+        ).remote(
+            num_sequnces=num_sequences,  # TODO Change this based on world size
+            num_generator_workers=num_workers,
+            num_collate_workers=2,
+            batch_size=batch_size,
+            prefetch_factor=prefetch_factor,
+            world_size=1,  # this should really be called num_gpus in this case
+        )
+        queue = ray.get(ray_loader.get_batch_queue.remote(0))
+        worker_refs = ray.get(ray_loader.start_round.remote())
 
-    total_pad_rate = []
-    all_gpu_stats = []
-    start_time = time.perf_counter()
-    for batch in tqdm(
-        get_items_from_queue(worker_refs, queue), total=total_num_sequences
-    ):
-        batch_cpu = torch.tensor(batch, dtype=torch.long)
-        padded = batch_cpu.to(device, non_blocking=True)
-        pad_rate = compute_pad_rate(padded)
-        total_pad_rate.append(pad_rate)
-        logits = model(padded)  # shape [B, out_dim]
-        targets = torch.randn(logits.shape, device=device)
-        loss = criterion(logits, targets)
-        optimizer.zero_grad(set_to_none=True)
-        loss.backward()
-        optimizer.step()
-        all_gpu_stats.append(get_gpu_stats(gpu_handle))
-    end_time = time.perf_counter()
+        total_pad_rate = []
+        all_gpu_stats = []
+        start_time = time.perf_counter()
+        for batch in tqdm(
+            get_items_from_queue(worker_refs, queue),
+            total=total_num_sequences,
+            desc=f"RayLoader {prefetch_factor}",
+        ):
+            batch_cpu = torch.tensor(batch, dtype=torch.long)
+            padded = batch_cpu.to(device, non_blocking=True)
+            pad_rate = compute_pad_rate(padded)
+            total_pad_rate.append(pad_rate)
+            logits = model(padded)  # shape [B, out_dim]
+            targets = torch.randn(logits.shape, device=device)
+            loss = criterion(logits, targets)
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            optimizer.step()
+            all_gpu_stats.append(get_gpu_stats(gpu_handle))
+        end_time = time.perf_counter()
+        ray_loader.teardown.remote()
+        ray.kill(ray_loader, no_restart=True)
 
-    total_pad_rate = np.average(np.array(total_pad_rate))
-    total_time = end_time - start_time
-    print(f"Total pad rate: {total_pad_rate} total_time: {total_time}")
-    print(np.average(np.array(all_gpu_stats), axis=0))
+        total_pad_rate = np.average(np.array(total_pad_rate))
+        total_time = end_time - start_time
+        print(f"Total pad rate: {total_pad_rate} total_time: {total_time}")
+        print(np.average(np.array(all_gpu_stats), axis=0))
 
     if world_size > 1 and dist.is_initialized():
         dist.barrier()
