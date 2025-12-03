@@ -42,6 +42,7 @@ def main(
     num_sequences: int = 1024,
     batch_size: int = 8,
     vocab_size: int = 1024,
+    tqdm_enabled: bool = True,
 ):
     world_size = int(
         os.environ.get("WORLD_SIZE", os.environ.get("SLURM_NTASKS", 1))
@@ -89,13 +90,18 @@ def main(
         # persistent_workers=(num_workers > 0),
         drop_last=False,
     )
-    total_num_sequences = math.ceil(num_sequences / (batch_size * world_size))
+    total_num_sequences = (
+        math.ceil(num_sequences / (batch_size * world_size)) + 1
+    )
 
     total_pad_rate = []
     all_gpu_stats = []
     start_time = time.perf_counter()
     for i, (padded_cpu, lengths) in tqdm(
-        enumerate(dl), total=total_num_sequences, desc="TorchLoader"
+        enumerate(dl),
+        total=total_num_sequences,
+        desc="TorchLoader",
+        disable=not tqdm_enabled,
     ):
         padded = padded_cpu.to(device, non_blocking=True)
         pad_rate = compute_pad_rate(padded)
@@ -128,13 +134,14 @@ def main(
             "power_usage": all_gpu_stats[3],
         }
     )
+    num_sequences_per_node = num_sequences // world_size
 
     for prefetch_factor in [2, 4, 8, 16, 32]:
         # RayLoader
         ray_loader = RayLoader.options(
             name="data_loader", lifetime="detached"
         ).remote(
-            num_sequnces=num_sequences,  # TODO Change this based on world size
+            num_sequnces=int(num_sequences_per_node * 1.5),
             num_generator_workers=num_workers,
             num_collate_workers=2,
             batch_size=batch_size,
@@ -147,10 +154,11 @@ def main(
         total_pad_rate = []
         all_gpu_stats = []
         start_time = time.perf_counter()
-        for batch in tqdm(
-            get_items_from_queue(worker_refs, queue),
+        for index, batch in tqdm(
+            enumerate(get_items_from_queue(worker_refs, queue)),
             total=total_num_sequences,
             desc=f"RayLoader {prefetch_factor}",
+            disable=not tqdm_enabled,
         ):
             batch_cpu = torch.tensor(batch, dtype=torch.long)
             padded = batch_cpu.to(device, non_blocking=True)
@@ -163,7 +171,14 @@ def main(
             loss.backward()
             optimizer.step()
             all_gpu_stats.append(get_gpu_stats(gpu_handle))
+            if index >= total_num_sequences:
+                break
         end_time = time.perf_counter()
+
+        # empty out queue
+        for _ in get_items_from_queue(worker_refs, queue):
+            pass
+
         ray_loader.teardown.remote()
         ray.kill(ray_loader, no_restart=True)
 
