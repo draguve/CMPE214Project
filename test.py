@@ -1,8 +1,9 @@
+import csv
 import math
 import os
 import time
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal
 
 import numpy as np
 import pynvml
@@ -15,7 +16,6 @@ from torch import optim
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from typing_extensions import Annotated
 
 from model import TestTransformer
 from raydl import Dataloader as RayLoader
@@ -36,9 +36,7 @@ def get_gpu_stats(handle):
 
 @app.command()
 def main(
-    results_file: Annotated[Optional[Path], typer.Option()] = Path(
-        "./results.csv"
-    ),
+    results_file: Path = Path("./results.csv"),
     backend: Literal["gloo", "nccl", "mpi"] = "nccl",
     num_workers: int = 4,
     num_sequences: int = 1024,
@@ -63,6 +61,7 @@ def main(
 
     pynvml.nvmlInit()
     gpu_handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+    data_to_write = []
 
     results_file.touch()
     clean_ray_init(force=num_workers * 2, dashboard=False, namespace="testing")
@@ -113,10 +112,24 @@ def main(
 
     total_pad_rate = np.average(np.array(total_pad_rate))
     total_time = end_time - start_time
-    print(f"Total pad rate: {total_pad_rate} total_time: {total_time}")
-    print(np.average(np.array(all_gpu_stats), axis=0))
+    all_gpu_stats = np.average(np.array(all_gpu_stats), axis=0)
+    data_to_write.append(
+        {
+            "loader": "TorchDL",
+            "prefetch_factor": "",
+            "num_seqs": num_sequences,
+            "batch_size": batch_size,
+            "world_size": world_size,
+            "time": total_time,
+            "pad_rate": total_pad_rate,
+            "occupancy": all_gpu_stats[0],
+            "vram_usage": all_gpu_stats[1],
+            "total_available_vram": all_gpu_stats[2],
+            "power_usage": all_gpu_stats[3],
+        }
+    )
 
-    for prefetch_factor in [2, 4, 8, 16]:
+    for prefetch_factor in [2, 4, 8, 16, 32]:
         # RayLoader
         ray_loader = RayLoader.options(
             name="data_loader", lifetime="detached"
@@ -156,14 +169,39 @@ def main(
 
         total_pad_rate = np.average(np.array(total_pad_rate))
         total_time = end_time - start_time
-        print(f"Total pad rate: {total_pad_rate} total_time: {total_time}")
-        print(np.average(np.array(all_gpu_stats), axis=0))
+        all_gpu_stats = np.average(np.array(all_gpu_stats), axis=0)
+        data_to_write.append(
+            {
+                "loader": "RayDL",
+                "prefetch_factor": prefetch_factor,
+                "num_seqs": num_sequences,
+                "batch_size": batch_size,
+                "world_size": world_size,
+                "time": total_time,
+                "pad_rate": total_pad_rate,
+                "occupancy": all_gpu_stats[0],
+                "vram_usage": all_gpu_stats[1],
+                "total_available_vram": all_gpu_stats[2],
+                "power_usage": all_gpu_stats[3],
+            }
+        )
 
     if world_size > 1 and dist.is_initialized():
         dist.barrier()
         dist.destroy_process_group()
 
     pynvml.nvmlShutdown()
+
+    if rank == 0:
+        write_header = (
+            not results_file.exists() or results_file.stat().st_size == 0
+        )
+
+        with results_file.open("a", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=data_to_write[0].keys())
+            if write_header:
+                writer.writeheader()
+            writer.writerows(data_to_write)
 
 
 if __name__ == "__main__":
