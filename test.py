@@ -3,6 +3,7 @@ import math
 import os
 import time
 from pathlib import Path
+from pprint import pformat
 from typing import Literal
 
 import numpy as np
@@ -44,19 +45,17 @@ def main(
     vocab_size: int = 1024,
     tqdm_enabled: bool = True,
 ):
-    world_size = int(
-        os.environ.get("WORLD_SIZE", os.environ.get("SLURM_NTASKS", 1))
-    )
+    world_size = int(os.environ.get("WORLD_SIZE", os.environ.get("SLURM_NTASKS", 1)))
     rank = int(os.environ.get("RANK", os.environ.get("SLURM_PROCID", 0)))
 
     if world_size > 1:
         dist.init_process_group(
             "nccl",
-            init_method=f"file:///{os.getcwd()}/Temp/sharedfile",
+            # init_method=f"file:///{os.getcwd()}/Temp/sharedfile",
             world_size=world_size,
             rank=rank,
         )
-        print(f"Initialized distributed group: rank {rank}/{world_size}")
+        print(f"Initialized distributed group: rank {rank}/{world_size}", flush=True)
     else:
         print("Running in single-process mode (no distributed init).")
 
@@ -68,18 +67,14 @@ def main(
     clean_ray_init(force=num_workers * 2, dashboard=False, namespace="testing")
     device = "cuda"
 
-    model = TestTransformer(max_seq_len=1024, vocab_size=1024, d_model=64).to(
-        device
-    )
+    model = TestTransformer(max_seq_len=1024, vocab_size=1024, d_model=64).to(device)
     if world_size > 1:
         model = DDP(model)
 
     criterion = nn.MSELoss()
     optimizer = optim.SGD(model.parameters())
 
-    dataset = RandomSequenceDataset(
-        num_sequences=num_sequences, vocab_size=vocab_size
-    )
+    dataset = RandomSequenceDataset(num_sequences=num_sequences, vocab_size=vocab_size)
 
     dl = DataLoader(
         dataset,
@@ -90,9 +85,10 @@ def main(
         # persistent_workers=(num_workers > 0),
         drop_last=False,
     )
-    total_num_sequences = (
-        math.ceil(num_sequences / (batch_size * world_size)) + 1
-    )
+    total_num_sequences = math.ceil(num_sequences / (batch_size * world_size)) + 1
+
+    if world_size > 1:
+        dist.barrier()
 
     total_pad_rate = []
     all_gpu_stats = []
@@ -119,28 +115,31 @@ def main(
     total_pad_rate = np.average(np.array(total_pad_rate))
     total_time = end_time - start_time
     all_gpu_stats = np.average(np.array(all_gpu_stats), axis=0)
-    data_to_write.append(
-        {
-            "loader": "TorchDL",
-            "prefetch_factor": "",
-            "num_seqs": num_sequences,
-            "batch_size": batch_size,
-            "world_size": world_size,
-            "time": total_time,
-            "pad_rate": total_pad_rate,
-            "occupancy": all_gpu_stats[0],
-            "vram_usage": all_gpu_stats[1],
-            "total_available_vram": all_gpu_stats[2],
-            "power_usage": all_gpu_stats[3],
-        }
-    )
+
+    new_item = {
+        "loader": "TorchDL",
+        "prefetch_factor": "",
+        "num_seqs": num_sequences,
+        "batch_size": batch_size,
+        "world_size": world_size,
+        "time": total_time,
+        "pad_rate": total_pad_rate,
+        "occupancy": all_gpu_stats[0],
+        "vram_usage": all_gpu_stats[1],
+        "total_available_vram": all_gpu_stats[2],
+        "power_usage": all_gpu_stats[3],
+    }
+    data_to_write.append(new_item)
+    if rank == 0:
+        print(pformat(new_item), flush=True)
     num_sequences_per_node = num_sequences // world_size
 
     for prefetch_factor in [2, 4, 8, 16, 32]:
+        if world_size > 1:
+            dist.barrier()
+
         # RayLoader
-        ray_loader = RayLoader.options(
-            name="data_loader", lifetime="detached"
-        ).remote(
+        ray_loader = RayLoader.options(name="data_loader", lifetime="detached").remote(
             num_sequnces=int(num_sequences_per_node * 1.5),
             num_generator_workers=num_workers,
             num_collate_workers=2,
@@ -185,21 +184,22 @@ def main(
         total_pad_rate = np.average(np.array(total_pad_rate))
         total_time = end_time - start_time
         all_gpu_stats = np.average(np.array(all_gpu_stats), axis=0)
-        data_to_write.append(
-            {
-                "loader": "RayDL",
-                "prefetch_factor": prefetch_factor,
-                "num_seqs": num_sequences,
-                "batch_size": batch_size,
-                "world_size": world_size,
-                "time": total_time,
-                "pad_rate": total_pad_rate,
-                "occupancy": all_gpu_stats[0],
-                "vram_usage": all_gpu_stats[1],
-                "total_available_vram": all_gpu_stats[2],
-                "power_usage": all_gpu_stats[3],
-            }
-        )
+        new_item = {
+            "loader": "RayDL",
+            "prefetch_factor": prefetch_factor,
+            "num_seqs": num_sequences,
+            "batch_size": batch_size,
+            "world_size": world_size,
+            "time": total_time,
+            "pad_rate": total_pad_rate,
+            "occupancy": all_gpu_stats[0],
+            "vram_usage": all_gpu_stats[1],
+            "total_available_vram": all_gpu_stats[2],
+            "power_usage": all_gpu_stats[3],
+        }
+        data_to_write.append(new_item)
+        if rank == 0:
+            print(pformat(new_item), flush=True)
 
     if world_size > 1 and dist.is_initialized():
         dist.barrier()
@@ -208,9 +208,7 @@ def main(
     pynvml.nvmlShutdown()
 
     if rank == 0:
-        write_header = (
-            not results_file.exists() or results_file.stat().st_size == 0
-        )
+        write_header = not results_file.exists() or results_file.stat().st_size == 0
 
         with results_file.open("a", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=data_to_write[0].keys())
