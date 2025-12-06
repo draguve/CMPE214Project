@@ -38,24 +38,29 @@ def get_gpu_stats(handle):
 @app.command()
 def main(
     results_file: Path = Path("./results.csv"),
-    backend: Literal["gloo", "nccl", "mpi"] = "nccl",
+    backend: Literal["gloo", "nccl", "mpi"] = "gloo",
     num_workers: int = 4,
     num_sequences: int = 1024,
     batch_size: int = 8,
     vocab_size: int = 1024,
     tqdm_enabled: bool = True,
 ):
-    world_size = int(os.environ.get("WORLD_SIZE", os.environ.get("SLURM_NTASKS", 1)))
+    world_size = int(
+        os.environ.get("WORLD_SIZE", os.environ.get("SLURM_NTASKS", 1))
+    )
     rank = int(os.environ.get("RANK", os.environ.get("SLURM_PROCID", 0)))
 
     if world_size > 1:
         dist.init_process_group(
-            "nccl",
+            backend,
             # init_method=f"file:///{os.getcwd()}/Temp/sharedfile",
             world_size=world_size,
             rank=rank,
         )
-        print(f"Initialized distributed group: rank {rank}/{world_size}", flush=True)
+        print(
+            f"Initialized distributed group: rank {rank}/{world_size}",
+            flush=True,
+        )
     else:
         print("Running in single-process mode (no distributed init).")
 
@@ -67,14 +72,20 @@ def main(
     clean_ray_init(force=num_workers * 2, dashboard=False, namespace="testing")
     device = "cuda"
 
-    model = TestTransformer(max_seq_len=1024, vocab_size=1024, d_model=64).to(device)
+    model = TestTransformer(max_seq_len=1024, vocab_size=1024, d_model=64).to(
+        device
+    )
+
     if world_size > 1:
-        model = DDP(model)
+        model = DDP(model, device_ids=[0])
+        print(f"[rank {rank}] Model synced", flush=True)
 
     criterion = nn.MSELoss()
     optimizer = optim.SGD(model.parameters())
 
-    dataset = RandomSequenceDataset(num_sequences=num_sequences, vocab_size=vocab_size)
+    dataset = RandomSequenceDataset(
+        num_sequences=num_sequences, vocab_size=vocab_size
+    )
 
     dl = DataLoader(
         dataset,
@@ -85,7 +96,9 @@ def main(
         # persistent_workers=(num_workers > 0),
         drop_last=False,
     )
-    total_num_sequences = math.ceil(num_sequences / (batch_size * world_size)) + 1
+    total_num_sequences = (
+        math.ceil(num_sequences / (batch_size * world_size)) + 1
+    )
 
     if world_size > 1:
         dist.barrier()
@@ -132,6 +145,7 @@ def main(
     data_to_write.append(new_item)
     if rank == 0:
         print(pformat(new_item), flush=True)
+
     num_sequences_per_node = num_sequences // world_size
 
     for prefetch_factor in [2, 4, 8, 16, 32]:
@@ -139,7 +153,9 @@ def main(
             dist.barrier()
 
         # RayLoader
-        ray_loader = RayLoader.options(name="data_loader", lifetime="detached").remote(
+        ray_loader = RayLoader.options(
+            name="data_loader", lifetime="detached"
+        ).remote(
             num_sequnces=int(num_sequences_per_node * 1.5),
             num_generator_workers=num_workers,
             num_collate_workers=2,
@@ -208,7 +224,9 @@ def main(
     pynvml.nvmlShutdown()
 
     if rank == 0:
-        write_header = not results_file.exists() or results_file.stat().st_size == 0
+        write_header = (
+            not results_file.exists() or results_file.stat().st_size == 0
+        )
 
         with results_file.open("a", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=data_to_write[0].keys())

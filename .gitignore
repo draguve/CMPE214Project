@@ -368,4 +368,4 @@ Saved_Models/
 # ignore all outputs
 *.*.err
 *.*.out
-results.csv
+*.csv
