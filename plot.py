@@ -29,7 +29,7 @@ plt.xlabel("prefetch_factor (0 = TorchDL)")
 plt.title("Occupancy vs Prefetch Factor (Batch Size = 256, World Size=1)")
 plt.grid(True, alpha=0.3)
 plt.tight_layout()
-plt.savefig(plt_location / "OccVsPrefetchFactor_B256_W1.png", dpi=300)
+plt.savefig(plt_location / "OccVsPrefetchFactor_B256_W1.svg", dpi=300)
 
 plt.figure(figsize=(10, 6))
 plt.plot(
@@ -42,7 +42,7 @@ plt.xlabel("prefetch_factor (0 = TorchDL)")
 plt.title("Pad Rate vs Prefetch Factor (Batch Size = 256, World Size=1)")
 plt.grid(True, alpha=0.3)
 plt.tight_layout()
-plt.savefig(plt_location / "PadRateVsPrefetchFactor_B256_W1.png", dpi=300)
+plt.savefig(plt_location / "PadRateVsPrefetchFactor_B256_W1.svg", dpi=300)
 
 world_sizes = [1, 2, 4, 8]
 
@@ -71,7 +71,7 @@ for w in world_sizes:
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.savefig(
-        plt_location / f"OccVsPrefetchFactor_AllB_W{w}.png",
+        plt_location / f"OccVsPrefetchFactor_AllB_W{w}.svg",
         dpi=300,
     )
 
@@ -94,7 +94,7 @@ for w in world_sizes:
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.savefig(
-        plt_location / f"PadRateVsPrefetchFactor_AllB_W{w}.png",
+        plt_location / f"PadRateVsPrefetchFactor_AllB_W{w}.svg",
         dpi=300,
     )
 
@@ -140,7 +140,7 @@ for world_size_of_interest in [1, 2, 4, 8]:
     plt.tight_layout()
 
     plt.savefig(
-        plt_location / f"ThroughputvsBatchSize_W{world_size_of_interest}.png",
+        plt_location / f"ThroughputvsBatchSize_W{world_size_of_interest}.svg",
         dpi=300,
     )
 
@@ -182,7 +182,7 @@ for world_size_of_interest in [1, 2, 4, 8]:
     plt.tight_layout()
 
     plt.savefig(
-        plt_location / f"TimetvsBatchSize_W{world_size_of_interest}.png",
+        plt_location / f"TimetvsBatchSize_W{world_size_of_interest}.svg",
         dpi=300,
     )
 
@@ -219,7 +219,7 @@ for world_size_of_interest in [1, 2, 4, 8]:
 
     plt.savefig(
         plt_location
-        / f"PowerUsage_vs_Throughput_W{world_size_of_interest}.png",
+        / f"PowerUsage_vs_Throughput_W{world_size_of_interest}.svg",
         dpi=300,
     )
 
@@ -255,7 +255,7 @@ plt.legend(title="Loader / Prefetch")
 plt.tight_layout()
 
 plt.savefig(
-    plt_location / "Occupancy_vs_PaddingRate.png",
+    plt_location / "Occupancy_vs_PaddingRate.svg",
     dpi=300,
 )
 
@@ -299,7 +299,7 @@ for batch_size_of_interest in batch_sizes_of_interest:
     plt.tight_layout()
 
     plt.savefig(
-        plt_location / f"ThroughputvsWorldSize_B{batch_size_of_interest}.png",
+        plt_location / f"ThroughputvsWorldSize_B{batch_size_of_interest}.svg",
         dpi=300,
     )
 
@@ -354,7 +354,7 @@ plt.grid(True, alpha=0.3)
 plt.tight_layout()
 
 plt.savefig(
-    plt_location / f"TimetvsBatchSize_W{world_size_of_interest}_LongerRun.png",
+    plt_location / f"TimetvsBatchSize_W{world_size_of_interest}_LongerRun.svg",
     dpi=300,
 )
 
@@ -392,7 +392,7 @@ plt.tight_layout()
 
 plt.savefig(
     plt_location
-    / f"ThroughputvsBatchSize_W{world_size_of_interest}_LongerRun.png",
+    / f"ThroughputvsBatchSize_W{world_size_of_interest}_LongerRun.svg",
     dpi=300,
 )
 
@@ -426,6 +426,6 @@ plt.grid(True, alpha=0.3)
 plt.tight_layout()
 
 plt.savefig(
-    plt_location / f"PowerUsage_vs_Throughput_W{world_size_of_interest}.png",
+    plt_location / f"PowerUsage_vs_Throughput_W{world_size_of_interest}.svg",
     dpi=300,
 )
